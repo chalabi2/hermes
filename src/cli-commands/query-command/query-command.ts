@@ -16,6 +16,7 @@ export async function queryCommand(config: CommandConfig, options: QueryOptions)
     config.logger?.log(`Admin:            ${cfg.admin}`);
     config.logger?.log(`Update Fee:       ${cfg.update_fee}`);
     config.logger?.log(`Price Feed ID:    ${cfg.price_feed_id}`);
+    config.logger?.log(`Pyth VAA:         ${cfg.pyth_vaa_contract}`);
     config.logger?.log(`Default Denom:    ${cfg.default_denom}`);
     config.logger?.log(`Base Denom:       ${cfg.default_base_denom}`);
     return;

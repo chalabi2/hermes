@@ -771,12 +771,11 @@ function buildCurrentPrice(price: string, expo: number, publishTime: number): Pr
 function buildConfig(overrides?: Partial<ConfigResponse>): ConfigResponse {
   return {
     admin: "akash1admin",
-    wormhole_contract: "akash1wormhole",
+    pyth_vaa_contract: "akash1vaa",
     update_fee: "1",
     price_feed_id: "test-feed-id",
     default_denom: "uakt",
     default_base_denom: "akt",
-    data_sources: [],
     ...overrides,
   };
 }

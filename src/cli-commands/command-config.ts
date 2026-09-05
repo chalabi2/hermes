@@ -5,6 +5,7 @@ import type { PriceProducerFactoryOptions } from "../types.ts";
 import { pollPriceStream } from "../price-stream/polling-price-stream/polling-price-stream.ts";
 import { priceSSEStream } from "../price-stream/price-sse-stream/price-sse-stream.ts";
 import { ContractClientService, type SigningClientServiceConfig } from "../services/contract-client/contract-client.service.ts";
+import { DEFAULT_PYTH_ROUTER_ENDPOINTS, RouterSetUpdater } from "../services/router-set-updater/router-set-updater.ts";
 
 export interface CommandConfig extends HermesConfig {
   createHermesClient: (config: HermesConfig) => HermesClient;
@@ -48,6 +49,10 @@ const configSchema = z.object({
   }).optional(),
   PRICE_FETCHING_METHOD: z.enum(["polling", "sse"]).default("polling"),
   PRICE_UPDATE_TX_METHOD: z.enum(["ordered", "unordered"]).default("ordered"),
+  PYTH_ROUTER_ENDPOINTS: z.string()
+    .default(DEFAULT_PYTH_ROUTER_ENDPOINTS.join(","))
+    .transform(value => value.split(",").map(endpoint => endpoint.trim()).filter(Boolean))
+    .refine(endpoints => endpoints.length > 0, { message: "PYTH_ROUTER_ENDPOINTS must include at least one endpoint" }),
   UNORDERED_TX_TTL_MS: z.coerce.number().int().min(1000).positive().default(180_000),
   UPDATE_INTERVAL_MS: z.coerce.number().int().nonnegative().default(5 * 1000), // Default to 5 seconds
   HEALTHCHECK_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -69,6 +74,17 @@ export function parseConfig(config: Record<string, string | undefined>): ParseCo
   }
 
   const unsafeAllowInsecureEndpoints = result.data.NODE_ENV === "development"; // Enforce secure endpoints in production
+  let routerSetUpdater: RouterSetUpdater;
+  try {
+    routerSetUpdater = new RouterSetUpdater({
+      endpoints: result.data.PYTH_ROUTER_ENDPOINTS,
+      authenticationToken: result.data.HERMES_API_KEY,
+      unsafeAllowInsecureEndpoints,
+    });
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Invalid PYTH_ROUTER_ENDPOINTS" };
+  }
+
   const parsedConfig: ParsedConfig = {
     rawConfig: result.data,
     unsafeAllowInsecureEndpoints,
@@ -84,6 +100,7 @@ export function parseConfig(config: Record<string, string | undefined>): ParseCo
     insufficientBalanceRetryDelayMs: result.data.INSUFFICIENT_BALANCE_RETRY_DELAY_MS,
     priceUpdateTxMethod: result.data.PRICE_UPDATE_TX_METHOD,
     unorderedTxTtlMs: result.data.UNORDERED_TX_TTL_MS,
+    routerSetUpdater,
     priceProducerFactory(options: PriceProducerFactoryOptions) {
       if (result.data.PRICE_FETCHING_METHOD === "sse") {
         return priceSSEStream({

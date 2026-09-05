@@ -17,6 +17,7 @@ export interface PythPriceData {
 
 export interface PriceUpdate {
   priceData: PythPriceData;
+  // PNAU update data from the upgraded Pyth Hermes API.
   vaa: string;
 }
 
@@ -51,11 +52,14 @@ export interface PriceUpdateOptions {
 
 export interface UpdatePriceFeedMsg {
   update_price_feed: {
-    // VAA data from Pyth Hermes API (base64 encoded Binary)
-    // The Pyth contract will:
-    // 1. Verify VAA via Wormhole contract
-    // 2. Parse Pyth price attestation from payload
-    // 3. Relay to x/oracle module
+    // PNAU data from Pyth Hermes API (base64 encoded Binary).
+    vaa: string;
+  };
+}
+
+export interface SubmitVaaMsg {
+  submit_v_a_a: {
+    // Router-set upgrade VAA (base64 encoded Binary).
     vaa: string;
   };
 }

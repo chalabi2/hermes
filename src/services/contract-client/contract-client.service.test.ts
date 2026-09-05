@@ -370,12 +370,11 @@ describe(ContractClientService.name, () => {
   function createConfigResponse(): ConfigResponse {
     return {
       admin: MNEMONIC_ADDRESS,
-      wormhole_contract: CONTRACT_ADDRESS,
+      pyth_vaa_contract: CONTRACT_ADDRESS,
       update_fee: "250",
       price_feed_id: "feed-id",
       default_denom: "uakt",
       default_base_denom: "akt",
-      data_sources: [{ emitter_chain: 26, emitter_address: "e101faedac5851e32b9b23b5f9411a8c2bac4aae3ed4dd7b811dd1a72ea4aa71" }],
     };
   }
 });

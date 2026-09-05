@@ -25,10 +25,9 @@ describe("queryCommand", () => {
         admin: "akash1admin",
         update_fee: "100",
         price_feed_id: "feed-123",
+        pyth_vaa_contract: "akash1vaa",
         default_denom: "uakt",
         default_base_denom: "akt",
-        wormhole_contract: "akash1wormhole",
-        data_sources: [],
       });
 
       await queryCommand(config, { config: true });
@@ -38,6 +37,7 @@ describe("queryCommand", () => {
       expect(logger.log).toHaveBeenCalledWith("Admin:            akash1admin");
       expect(logger.log).toHaveBeenCalledWith("Update Fee:       100");
       expect(logger.log).toHaveBeenCalledWith("Price Feed ID:    feed-123");
+      expect(logger.log).toHaveBeenCalledWith("Pyth VAA:         akash1vaa");
       expect(logger.log).toHaveBeenCalledWith("Default Denom:    uakt");
       expect(logger.log).toHaveBeenCalledWith("Base Denom:       akt");
     });

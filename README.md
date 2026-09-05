@@ -175,6 +175,7 @@ akash query wasm contract-state smart $HC_CONTRACT_ADDRESS '{"get_config":{}}'
 | `HC_CONTRACT_ADDRESS` | Yes | - | Oracle contract address |
 | `HC_WALLET_SECRET` | Yes | - | Either `privateKey:<private key in hex format>` or `mnemonic:<12/24 words>` |
 | `HC_HERMES_ENDPOINT` | No | `https://hermes.pyth.network` | Pyth Hermes API |
+| `HC_PYTH_ROUTER_ENDPOINTS` | No | Douro router endpoints | comma-separated Pyth router endpoints used to fetch signed router-set upgrade VAAs |
 | `HC_PRICE_DEVIATION_TOLERANCE` | No | - | absolute or percentage value for price deviations which should be ignored (e.g., `100` or `10%`). When unset, every price with a newer publish time is submitted |
 | `HC_PRICE_FETCHING_METHOD` | No | polling | `polling` or `sse` |
 | `HC_PRICE_UPDATE_TX_METHOD` | No | ordered | `ordered` or `unordered` |

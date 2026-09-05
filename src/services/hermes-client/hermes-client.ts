@@ -6,14 +6,15 @@
  *
  * The Pyth contract:
  * 1. Receives the VAA (Verified Action Approval) from this client
- * 2. Verifies VAA signatures via Wormhole contract
+ * 2. Verifies VAA signatures via the pyth_vaa contract
  * 3. Parses Pyth price attestation from VAA payload
  * 4. Relays validated price to x/oracle module
  */
 
 import { latestValue } from "../../lib/generators/latest-value/latest-value.ts";
 import { blockchainPriceStaleness, priceUpdateCounter } from "../../metrics.ts";
-import { ContractClientService, type PriceResponse, type SigningClientServiceConfig } from "../contract-client/contract-client.service.ts";
+import { ContractClientService, type ConfigResponse, type PriceResponse, type SigningClientServiceConfig } from "../contract-client/contract-client.service.ts";
+import type { RouterSetUpdater } from "../router-set-updater/router-set-updater.ts";
 import type { Logger, PriceProducerFactory, PriceUpdate, PythPriceData } from "../../types.ts";
 import {
   sanitizeErrorMessage,
@@ -72,12 +73,13 @@ export interface HermesConfig {
    * which opens an RPC connection; inject a fake to drive the client without a chain.
    */
   contractClientFactory?: (config: SigningClientServiceConfig) => ContractClient;
+  routerSetUpdater?: Pick<RouterSetUpdater, "buildUpgradeVaa">;
 }
 
 /**
  * The chain access this client depends on. A subset of {@link ContractClientService}.
  */
-export type ContractClient = Pick<ContractClientService, "getAccount" | "queryConfig" | "queryCurrentPrice" | "updatePrice" | "disconnect">;
+export type ContractClient = Pick<ContractClientService, "getAccount" | "queryConfig" | "queryCurrentPrice" | "queryPythVaaConfig" | "submitRouterSetUpgrade" | "updatePrice" | "disconnect">;
 
 export class HermesClient {
   readonly #signingClient: ContractClient;
@@ -189,11 +191,7 @@ export class HermesClient {
 
       const config = await this.#signingClient.queryConfig();
 
-      this.#logger.log("Submitting VAA to Pyth contract...");
-      this.#logger.log(`  Wormhole contract: ${config.wormhole_contract}`);
-      const result = await this.#signingClient.updatePrice(priceUpdate, {
-        updateFee: config.update_fee,
-      });
+      const result = await this.#submitPriceUpdate(priceUpdate, config);
 
       const price = priceUpdate.priceData.price;
       this.#logger.log(`Price updated successfully! TX: ${result.transactionHash}`);
@@ -218,6 +216,62 @@ export class HermesClient {
     } finally {
       this.#logger.log(`Price updated in ${((performance.now() - startTime) / 1000).toFixed(2)} s`);
     }
+  }
+
+  async #submitPriceUpdate(priceUpdate: PriceUpdate, config: ConfigResponse): Promise<{
+    transactionHash: string;
+    gasUsed?: bigint;
+  }> {
+    this.#logger.log("Submitting Pyth price update...");
+    this.#logger.log(`  pyth_vaa contract: ${config.pyth_vaa_contract}`);
+
+    try {
+      return await this.#signingClient.updatePrice(priceUpdate, {
+        updateFee: config.update_fee,
+      });
+    } catch (error) {
+      if (!isInvalidRouterSetIndex(error)) {
+        throw error;
+      }
+
+      const rotated = await this.#submitRouterSetUpgrade(config);
+      if (!rotated) {
+        throw error;
+      }
+
+      this.#logger.log("Retrying Pyth price update after router set upgrade...");
+      return await this.#signingClient.updatePrice(priceUpdate, {
+        updateFee: config.update_fee,
+      });
+    }
+  }
+
+  async #submitRouterSetUpgrade(config: ConfigResponse): Promise<boolean> {
+    const routerSetUpdater = this.#config.routerSetUpdater;
+    if (!routerSetUpdater) {
+      return false;
+    }
+
+    this.#logger.warn("Pyth router set is out of sync; checking for signed upgrade VAA...");
+    const pythVaaConfig = await this.#signingClient.queryPythVaaConfig(config.pyth_vaa_contract);
+    const upgrade = await routerSetUpdater.buildUpgradeVaa(pythVaaConfig);
+    if (!upgrade) {
+      throw new Error("Pyth router set upgrade required but no signed upgrade VAA is available");
+    }
+
+    this.#logger.warn(
+      `Submitting pyth_vaa router set upgrade ${upgrade.currentRouterSetIndex} -> ${upgrade.newRouterSetIndex}`,
+    );
+    const result = await this.#signingClient.submitRouterSetUpgrade({
+      pythVaaContract: config.pyth_vaa_contract,
+      vaa: upgrade.vaa,
+    });
+    this.#logger.log(`Router set upgraded successfully! TX: ${result.transactionHash}`);
+    if (result.gasUsed !== undefined) {
+      this.#logger.log(`  Gas used: ${result.gasUsed}`);
+    }
+
+    return true;
   }
 
   #canIgnorePriceUpdate(newPrice: PythPriceData, currentPrice: PriceResponse): boolean {
@@ -372,13 +426,16 @@ export class HermesClient {
   }
 }
 
-export type ErrorCode = "insufficient_balance" | "timeout" | "connection_issue" | "unknown";
+export type ErrorCode = "insufficient_balance" | "router_set_out_of_sync" | "timeout" | "connection_issue" | "unknown";
 
 export function classifyError(error: unknown): ErrorCode {
   const message = error instanceof Error ? error.message : "";
 
   if (/insufficient funds|insufficient fee/i.test(message)) {
     return "insufficient_balance";
+  }
+  if (isInvalidRouterSetIndex(error)) {
+    return "router_set_out_of_sync";
   }
   if (/timeout|ETIMEDOUT/i.test(message)) {
     return "timeout";
@@ -387,4 +444,9 @@ export function classifyError(error: unknown): ErrorCode {
     return "connection_issue";
   }
   return "unknown";
+}
+
+function isInvalidRouterSetIndex(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /InvalidRouterSetIndex/i.test(message);
 }

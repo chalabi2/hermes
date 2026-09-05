@@ -87,6 +87,19 @@ describe("parseConfig", () => {
     expect((result as Extract<typeof result, { ok: true }>).value.priceProducerFactory).toBeTypeOf("function");
   });
 
+  it("accepts PYTH_ROUTER_ENDPOINTS as a comma-separated endpoint list", () => {
+    const result = parseConfig(validEnv({
+      PYTH_ROUTER_ENDPOINTS: "https://router-0.example/v1, https://router-1.example/v1,https://router-2.example/v1",
+    }));
+
+    expect(result.ok).toBe(true);
+    expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.PYTH_ROUTER_ENDPOINTS).toEqual([
+      "https://router-0.example/v1",
+      "https://router-1.example/v1",
+      "https://router-2.example/v1",
+    ]);
+  });
+
   it("accepts UPDATE_INTERVAL_MS and produces priceProducerFactory", () => {
     const result = parseConfig(validEnv({ UPDATE_INTERVAL_MS: "5000" }));
 

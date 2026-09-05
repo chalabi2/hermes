@@ -6,8 +6,8 @@ import { TxRaw } from "cosmjs-types/cosmos/tx/v1beta1/tx";
 import { MsgExecuteContract } from "cosmjs-types/cosmwasm/wasm/v1/tx";
 import { memoizeAsync } from "../../lib/caching/helpers/helpers.ts";
 import { type SigningClient, SigningStargateClientService } from "../../lib/signing-stargate-client/signing-stargate-client.service.ts";
-import type { PriceUpdate, PriceUpdateOptions, PriceUpdater, UpdatePriceFeedMsg } from "../../types.ts";
-import { validateAkashAddress, validateFeeAmount } from "../../validation.ts";
+import type { PriceUpdate, PriceUpdateOptions, PriceUpdater, SubmitVaaMsg, UpdatePriceFeedMsg } from "../../types.ts";
+import { validateAkashAddress, validateContractAddress, validateFeeAmount } from "../../validation.ts";
 
 export class ContractClientService implements PriceUpdater {
   readonly #config: SigningClientServiceConfig;
@@ -56,14 +56,6 @@ export class ContractClientService implements PriceUpdater {
     return accountData;
   }
 
-  /**
-   * Prepare execute message with VAA
-   * The contract will:
-   * 1. Verify VAA via Wormhole contract
-   * 2. Parse Pyth price attestation from VAA payload
-   * 3. Validate price feed ID matches expected
-   * 4. Relay validated price to x/oracle module
-   */
   async updatePrice(priceUpdate: PriceUpdate, options: PriceUpdateOptions): Promise<{
     transactionHash: string;
     gasUsed?: bigint;
@@ -75,13 +67,53 @@ export class ContractClientService implements PriceUpdater {
     };
 
     if (this.#config.priceUpdateTxMethod === "unordered") {
-      return await this.#updatePriceInUnorderedTx(msg, options);
+      return await this.#executeInUnorderedTx({
+        contractAddress: this.#config.contractAddress,
+        msg,
+        funds: [{ denom: this.#config.denom, amount: options.updateFee }],
+      });
     }
 
-    return await this.#updatePriceInOrderedTx(msg, options);
+    return await this.#executeInOrderedTx({
+      contractAddress: this.#config.contractAddress,
+      msg,
+      funds: [{ denom: this.#config.denom, amount: options.updateFee }],
+    });
   }
 
-  async #updatePriceInUnorderedTx(msg: UpdatePriceFeedMsg, options: PriceUpdateOptions) {
+  async submitRouterSetUpgrade(input: {
+    pythVaaContract: string;
+    vaa: string;
+  }): Promise<{
+    transactionHash: string;
+    gasUsed?: bigint;
+  }> {
+    validateContractAddress(input.pythVaaContract);
+
+    const msg: SubmitVaaMsg = {
+      submit_v_a_a: {
+        vaa: input.vaa,
+      },
+    };
+
+    if (this.#config.priceUpdateTxMethod === "unordered") {
+      return await this.#executeInUnorderedTx({
+        contractAddress: input.pythVaaContract,
+        msg,
+      });
+    }
+
+    return await this.#executeInOrderedTx({
+      contractAddress: input.pythVaaContract,
+      msg,
+    });
+  }
+
+  async #executeInUnorderedTx(input: {
+    contractAddress: string;
+    msg: ContractExecuteMsg;
+    funds?: ContractFunds;
+  }) {
     const [signingClient, account] = await Promise.all([
       this.#getSigningClientWithUnorderedTxSupport(),
       this.getAccount(),
@@ -92,9 +124,9 @@ export class ContractClientService implements PriceUpdater {
         typeUrl: "/cosmwasm.wasm.v1.MsgExecuteContract",
         value: MsgExecuteContract.fromPartial({
           sender: account.address,
-          contract: this.#config.contractAddress,
-          msg: toUtf8(JSON.stringify(msg)),
-          funds: [{ denom: this.#config.denom, amount: options.updateFee }],
+          contract: input.contractAddress,
+          msg: toUtf8(JSON.stringify(input.msg)),
+          funds: input.funds ?? [],
         }),
       },
     ];
@@ -110,18 +142,22 @@ export class ContractClientService implements PriceUpdater {
     };
   }
 
-  async #updatePriceInOrderedTx(msg: UpdatePriceFeedMsg, options: PriceUpdateOptions) {
+  async #executeInOrderedTx(input: {
+    contractAddress: string;
+    msg: ContractExecuteMsg;
+    funds?: ContractFunds;
+  }) {
     const [signingClient, account] = await Promise.all([
       this.#getSigningClient(),
       this.getAccount(),
     ]);
     const result = await signingClient.execute(
       account.address,
-      this.#config.contractAddress,
-      msg,
+      input.contractAddress,
+      input.msg,
       this.#config.gasMultiplier,
       undefined,
-      [{ denom: this.#config.denom, amount: options.updateFee }],
+      input.funds,
     );
     return {
       transactionHash: result.transactionHash,
@@ -174,6 +210,17 @@ export class ContractClientService implements PriceUpdater {
     }
 
     const config = await this.#smartContractConfig.value;
+    return config;
+  }
+
+  async queryPythVaaConfig(pythVaaContract: string): Promise<PythVaaConfigResponse> {
+    validateContractAddress(pythVaaContract);
+    const signingClient = await this.#getSigningClient();
+    const config: PythVaaConfigResponse = await signingClient.queryContractSmart(
+      pythVaaContract,
+      { get_config: {} },
+    );
+
     return config;
   }
 
@@ -316,22 +363,11 @@ export interface SigningClientServiceConfig {
 
 export interface ConfigResponse {
   admin: string;
-  wormhole_contract: string;
+  pyth_vaa_contract: string;
   update_fee: string;       // Uint256 serializes as string
   price_feed_id: string;
   default_denom: string;
   default_base_denom: string;
-  data_sources: DataSourceResponse[];
-}
-
-// =====================
-// Contract Query Responses
-// Matches Pyth contract msg.rs
-// =====================
-
-export interface DataSourceResponse {
-  emitter_chain: number;    // u16 - Wormhole chain ID (26 for Pythnet)
-  emitter_address: string;  // 32 bytes hex encoded
 }
 
 export interface PriceResponse {
@@ -340,11 +376,6 @@ export interface PriceResponse {
   expo: number;             // i32
   publish_time: number;     // i64
 }
-
-// =====================
-// Contract Execute Messages
-// Matches pyth contract msg.rs
-// =====================
 
 interface UpdateFeeMsg {
   update_fee: {
@@ -378,3 +409,17 @@ interface OracleParamsResponse {
   twap_window: number;                // i64
   last_updated_height: number;        // u64
 }
+
+export interface PythVaaConfigResponse {
+  admin: string;
+  governance_target_chain: number;
+  router_verifier: {
+    router_set_index: number;
+    routers: Array<{ bytes: string }>;
+    expected_emitter_chain: number;
+    expected_emitter_address: string;
+  };
+}
+
+type ContractExecuteMsg = UpdatePriceFeedMsg | SubmitVaaMsg;
+type ContractFunds = Array<{ denom: string; amount: string }>;
