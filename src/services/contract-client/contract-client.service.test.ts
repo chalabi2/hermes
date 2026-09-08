@@ -19,6 +19,7 @@ const PRIVATE_KEY_ADDRESS = "akash1td2hmee6u8lt5n0fk3mwvme65zrj3vpf6anh6r";
 const MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MNEMONIC_ADDRESS = "akash19rl4cm2hmr8afy4kldpxz3fka4jguq0a3mq6x0";
 const CONTRACT_ADDRESS = "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu";
+const PYTH_VAA_CONTRACT_ADDRESS = "akash1fyr2mptjswz4w6xmgnpgm93x0q4s4wdl6srv3rtz3utc4f6fmxeqps4ws5";
 const RPC_ENDPOINT = "https://rpc.akashnet.net:443";
 
 describe(ContractClientService.name, () => {
@@ -168,6 +169,70 @@ describe(ContractClientService.name, () => {
 
       expect(signingClient.broadcastTx).toHaveBeenCalledTimes(2);
       expect(signingClient.getChainId).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("submitRouterSetUpgrade", () => {
+    it("executes the router-set upgrade against the pyth_vaa contract without funds", async () => {
+      const { client, signingClient } = setup({ priceUpdateTxMethod: "ordered", gasMultiplier: 1.5 });
+      const vaa = btoa("router-set-upgrade");
+
+      const result = await client.submitRouterSetUpgrade({
+        pythVaaContract: PYTH_VAA_CONTRACT_ADDRESS,
+        vaa,
+      });
+
+      expect(signingClient.execute).toHaveBeenCalledWith(
+        PRIVATE_KEY_ADDRESS,
+        PYTH_VAA_CONTRACT_ADDRESS,
+        { submit_v_a_a: { vaa } },
+        1.5,
+        undefined,
+        undefined,
+      );
+      expect(result).toEqual({ transactionHash: "ORDERED_TX_HASH", gasUsed: 120_000n });
+    });
+
+    it("broadcasts an unordered tx carrying the router-set upgrade to pyth_vaa", async () => {
+      const { client, signingClient } = setup({ priceUpdateTxMethod: "unordered" });
+      const vaa = btoa("router-set-upgrade");
+
+      await client.submitRouterSetUpgrade({
+        pythVaaContract: PYTH_VAA_CONTRACT_ADDRESS,
+        vaa,
+      });
+
+      expect(signingClient.execute).not.toHaveBeenCalled();
+      const body = TxBody.decode(TxRaw.decode(signingClient.broadcastTx.mock.calls[0][0]).bodyBytes);
+      expect(body.unordered).toBe(true);
+      expect(body.messages[0].typeUrl).toBe("/cosmwasm.wasm.v1.MsgExecuteContract");
+
+      const executeMsg = MsgExecuteContract.decode(body.messages[0].value);
+      expect(executeMsg.sender).toBe(PRIVATE_KEY_ADDRESS);
+      expect(executeMsg.contract).toBe(PYTH_VAA_CONTRACT_ADDRESS);
+      expect(executeMsg.funds).toEqual([]);
+      expect(JSON.parse(fromUtf8(executeMsg.msg))).toEqual({ submit_v_a_a: { vaa } });
+    });
+
+    it("queries pyth_vaa config from the supplied pyth_vaa address", async () => {
+      const { client, signingClient } = setup();
+      const config = {
+        admin: MNEMONIC_ADDRESS,
+        governance_target_chain: 29,
+        router_verifier: {
+          router_set_index: 1,
+          routers: Array.from({ length: 5 }, () => ({ bytes: "QVNLsXbkYaP7MEeUAPIQVJ7M5jg=" })),
+          expected_emitter_chain: 26,
+          expected_emitter_address: "UHl0aG5ldFB5dGhuZXRQeXRobmV0UHl0aG5ldFB5dGg=",
+        },
+      };
+      signingClient.queryContractSmart.mockResolvedValue(config);
+
+      await expect(client.queryPythVaaConfig(PYTH_VAA_CONTRACT_ADDRESS)).resolves.toEqual(config);
+      expect(signingClient.queryContractSmart).toHaveBeenCalledWith(
+        PYTH_VAA_CONTRACT_ADDRESS,
+        { get_config: {} },
+      );
     });
   });
 

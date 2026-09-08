@@ -52,6 +52,9 @@ describe(RouterSetUpdater.name, () => {
     expect(vaa[VAA_HEADER_LEN + VAA_SIGNATURE_LEN]).toBe(2);
     expect(vaa[VAA_HEADER_LEN + 2 * VAA_SIGNATURE_LEN]).toBe(4);
     expect(vaa.subarray(VAA_HEADER_LEN + 3 * VAA_SIGNATURE_LEN)).toEqual(Buffer.from(body));
+    expectContractSignature(vaa, 0, currentKeys[0], body);
+    expectContractSignature(vaa, 1, currentKeys[2], body);
+    expectContractSignature(vaa, 2, currentKeys[4], body);
   });
 
   it("returns undefined when routers report no upgrade in progress", async () => {
@@ -221,6 +224,25 @@ function buildUpgradeResponse(input: {
 function routerAddress(secretKey: Uint8Array): Uint8Array {
   const publicKey = secp256k1.getPublicKey(secretKey, false);
   return keccak_256(publicKey.subarray(1)).subarray(12);
+}
+
+function expectContractSignature(
+  vaa: Uint8Array,
+  signatureNumber: number,
+  signingKey: Uint8Array,
+  body: Uint8Array,
+) {
+  const signatureStart = VAA_HEADER_LEN + signatureNumber * VAA_SIGNATURE_LEN + 1;
+  const compact = vaa.subarray(signatureStart, signatureStart + 64);
+  const recovery = vaa[signatureStart + 64];
+  const signature = secp256k1.Signature.fromBytes(
+    concatBytes(Uint8Array.of(recovery), compact),
+    "recovered",
+  );
+  const recoveredKey = signature.recoverPublicKey(keccak_256(keccak_256(body))).toBytes(false);
+
+  expect(signature.hasHighS()).toBe(false);
+  expect(keccak_256(recoveredKey.subarray(1)).subarray(12)).toEqual(routerAddress(signingKey));
 }
 
 function fetchResponses(responses: Array<unknown>): typeof fetch {

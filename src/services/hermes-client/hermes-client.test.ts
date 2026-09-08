@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mock } from "vitest-mock-extended";
 import { ContractClient, HermesClient, HermesConfig, classifyError } from "./hermes-client.ts";
 import { blockchainPriceStaleness, priceUpdateCounter } from "../../metrics.ts";
-import { BroadcastError, type ConfigResponse, type PriceResponse } from "../contract-client/contract-client.service.ts";
+import { BroadcastError, type ConfigResponse, type PriceResponse, type PythVaaConfigResponse } from "../contract-client/contract-client.service.ts";
 import type { PriceUpdate, PriceProducerFactory, PriceProducerFactoryOptions } from "../../types.ts";
 
 const CONTRACT_ADDRESS = "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu";
@@ -145,6 +145,43 @@ describe(HermesClient.name, () => {
       await client.updatePrice();
 
       expect(contractClient.updatePrice).toHaveBeenCalledWith(priceUpdate, { updateFee: "1" });
+    });
+
+    it("submits a router-set upgrade to pyth_vaa and retries the price update when the router set is stale", async () => {
+      const routerSetUpdater = {
+        buildUpgradeVaa: vi.fn().mockResolvedValue({
+          vaa: btoa("router-set-upgrade"),
+          currentRouterSetIndex: 0,
+          newRouterSetIndex: 1,
+          signatureCount: 3,
+        }),
+      };
+      const { client, priceUpdate, contractClient } = setup({
+        priceFeed: buildPriceFeed("12400", -2, 2000),
+        routerSetUpdater,
+      });
+      const config = buildConfig({
+        pyth_vaa_contract: "akash1fyr2mptjswz4w6xmgnpgm93x0q4s4wdl6srv3rtz3utc4f6fmxeqps4ws5",
+      });
+      const pythVaaConfig = buildPythVaaConfig();
+      contractClient.queryConfig.mockResolvedValue(config);
+      contractClient.queryCurrentPrice.mockResolvedValue(buildCurrentPrice("12345", -2, 1000));
+      contractClient.queryPythVaaConfig.mockResolvedValue(pythVaaConfig);
+      contractClient.updatePrice
+        .mockRejectedValueOnce(new Error("InvalidRouterSetIndex: query wasm contract failed"))
+        .mockResolvedValueOnce({ transactionHash: "PRICE_TX", gasUsed: 500000n });
+      contractClient.submitRouterSetUpgrade.mockResolvedValue({ transactionHash: "ROUTER_TX", gasUsed: 300000n });
+
+      await client.updatePrice();
+
+      expect(contractClient.updatePrice).toHaveBeenNthCalledWith(1, priceUpdate, { updateFee: "1" });
+      expect(contractClient.queryPythVaaConfig).toHaveBeenCalledWith(config.pyth_vaa_contract);
+      expect(routerSetUpdater.buildUpgradeVaa).toHaveBeenCalledWith(pythVaaConfig);
+      expect(contractClient.submitRouterSetUpgrade).toHaveBeenCalledWith({
+        pythVaaContract: config.pyth_vaa_contract,
+        vaa: btoa("router-set-upgrade"),
+      });
+      expect(contractClient.updatePrice).toHaveBeenNthCalledWith(2, priceUpdate, { updateFee: "1" });
     });
 
     it("skips the update when no new price is available", async () => {
@@ -729,7 +766,9 @@ function setup(input?: Partial<HermesConfig> & {
   contractClient.getAccount.mockResolvedValue(buildAccount());
   contractClient.queryConfig.mockResolvedValue(buildConfig());
   contractClient.queryCurrentPrice.mockResolvedValue(buildCurrentPrice("0", -2, 0));
+  contractClient.queryPythVaaConfig.mockResolvedValue(buildPythVaaConfig());
   contractClient.updatePrice.mockResolvedValue({ transactionHash: "TX_DEFAULT", gasUsed: 500000n });
+  contractClient.submitRouterSetUpgrade.mockResolvedValue({ transactionHash: "TX_ROUTER_SET", gasUsed: 300000n });
 
   const logger = mock<Console>();
   const client = new HermesClient({
@@ -747,7 +786,8 @@ function setup(input?: Partial<HermesConfig> & {
     contractClientFactory: () => contractClient,
     denom: "uakt",
     gasMultiplier: 1.5,
-    priceUpdateTxMethod: "ordered",
+    priceUpdateTxMethod: input?.priceUpdateTxMethod ?? "ordered",
+    routerSetUpdater: input?.routerSetUpdater,
   });
 
   return { client, priceUpdate, priceProducerFactory, logger, contractClient };
@@ -776,6 +816,26 @@ function buildConfig(overrides?: Partial<ConfigResponse>): ConfigResponse {
     price_feed_id: "test-feed-id",
     default_denom: "uakt",
     default_base_denom: "akt",
+    ...overrides,
+  };
+}
+
+function buildPythVaaConfig(overrides?: Partial<PythVaaConfigResponse>): PythVaaConfigResponse {
+  return {
+    admin: "akash1admin",
+    governance_target_chain: 29,
+    router_verifier: {
+      router_set_index: 0,
+      routers: [
+        "QVNLsXbkYaP7MEeUAPIQVJ7M5jg=",
+        "ZQKYe2LyHKt+tczY8BcwhLYNW0E=",
+        "RKPo9qOCQSz2u5Cj+BBuaJd0dsk=",
+        "E+3HdtMGNUn9sHAq8YLtyQWlOdQ=",
+        "OvCIhUu3aAZfSSnlu9+ky7BMmvk=",
+      ].map(bytes => ({ bytes })),
+      expected_emitter_chain: 26,
+      expected_emitter_address: "UHl0aG5ldFB5dGhuZXRQeXRobmV0UHl0aG5ldFB5dGg=",
+    },
     ...overrides,
   };
 }

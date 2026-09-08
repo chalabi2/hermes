@@ -76,6 +76,8 @@ interface RouterSignature {
   signature: Uint8Array;
 }
 
+type Secp256k1Signature = ReturnType<typeof secp256k1.Signature.fromBytes>;
+
 type FetchResult =
   | { kind: "upgrade"; endpoint: string; share: RouterSetUpgradeShare }
   | { kind: "no_upgrade"; endpoint: string }
@@ -329,12 +331,11 @@ function recoverRouterSignature(input: {
   const candidates = signatureCandidates(input.signature);
 
   for (const candidate of candidates) {
+    let signature: Secp256k1Signature;
     let recoveredKey: Uint8Array;
     try {
-      recoveredKey = secp256k1.Signature
-        .fromBytes(candidate.recoveredSignature, "recovered")
-        .recoverPublicKey(hash)
-        .toBytes(false);
+      signature = secp256k1.Signature.fromBytes(candidate.recoveredSignature, "recovered");
+      recoveredKey = signature.recoverPublicKey(hash).toBytes(false);
     } catch {
       continue;
     }
@@ -344,7 +345,7 @@ function recoverRouterSignature(input: {
     if (routerIndex >= 0) {
       return {
         routerIndex,
-        signature: candidate.contractSignature,
+        signature: contractSignatureBytes(signature),
       };
     }
   }
@@ -354,20 +355,17 @@ function recoverRouterSignature(input: {
 
 function signatureCandidates(signature: Uint8Array): Array<{
   recoveredSignature: Uint8Array;
-  contractSignature: Uint8Array;
 }> {
   const rsvRecoveryId = normalizeRecoveryId(signature[COMPACT_SIGNATURE_LEN]);
   const vrsRecoveryId = normalizeRecoveryId(signature[0]);
   const candidates: Array<{
     recoveredSignature: Uint8Array;
-    contractSignature: Uint8Array;
   }> = [];
 
   if (rsvRecoveryId !== undefined) {
     const compact = signature.subarray(0, COMPACT_SIGNATURE_LEN);
     candidates.push({
       recoveredSignature: concatBytes(Uint8Array.of(rsvRecoveryId), compact),
-      contractSignature: concatBytes(compact, Uint8Array.of(rsvRecoveryId)),
     });
   }
 
@@ -375,11 +373,22 @@ function signatureCandidates(signature: Uint8Array): Array<{
     const compact = signature.subarray(1);
     candidates.push({
       recoveredSignature: concatBytes(Uint8Array.of(vrsRecoveryId), compact),
-      contractSignature: concatBytes(compact, Uint8Array.of(vrsRecoveryId)),
     });
   }
 
   return candidates;
+}
+
+function contractSignatureBytes(signature: Secp256k1Signature): Uint8Array {
+  if (signature.recovery === undefined) {
+    throw new Error("Pyth router set upgrade signature is missing a recovery id");
+  }
+
+  const recovery = signature.hasHighS()
+    ? signature.recovery ^ 1
+    : signature.recovery;
+  const normalized = signature.normalizeS();
+  return concatBytes(normalized.toBytes("compact"), Uint8Array.of(recovery));
 }
 
 function assembleVaa(input: {
