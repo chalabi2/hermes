@@ -35,8 +35,10 @@ cp .env.example .env
 Edit `.env`:
 ```bash
 HC_RPC_ENDPOINT=https://rpc.akashnet.net:443
+HC_HERMES_ENDPOINT=https://pyth.dourolabs.app/hermes
+HC_HERMES_API_KEY=your_pyth_api_key
 HC_CONTRACT_ADDRESS=akash1your_contract_address
-HC_MNEMONIC="your twelve or twenty four word mnemonic"
+HC_WALLET_SECRET="mnemonic:your twelve or twenty four word mnemonic"
 ```
 
 ### 3. Run
@@ -171,11 +173,10 @@ akash query wasm contract-state smart $HC_CONTRACT_ADDRESS '{"get_config":{}}'
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `HC_RPC_ENDPOINT` | Yes | - | Akash RPC endpoint |
-| `HC_HERMES_API_KEY` | No | - | optional hermes api key. After 31 Jul 2026 it will become required |
+| `HC_HERMES_API_KEY` | Yes | - | Pyth API key sent as `Authorization: Bearer` |
 | `HC_CONTRACT_ADDRESS` | Yes | - | Oracle contract address |
 | `HC_WALLET_SECRET` | Yes | - | Either `privateKey:<private key in hex format>` or `mnemonic:<12/24 words>` |
-| `HC_HERMES_ENDPOINT` | No | `https://hermes.pyth.network` | Pyth Hermes API |
-| `HC_PYTH_ROUTER_ENDPOINTS` | No | Douro router endpoints | comma-separated Pyth router endpoints used to fetch signed router-set upgrade VAAs |
+| `HC_HERMES_ENDPOINT` | No | `https://pyth.dourolabs.app/hermes` | Upgraded Pyth Hermes API. Price updates and router-set upgrade VAAs use this base URL |
 | `HC_PRICE_DEVIATION_TOLERANCE` | No | - | absolute or percentage value for price deviations which should be ignored (e.g., `100` or `10%`). When unset, every price with a newer publish time is submitted |
 | `HC_PRICE_FETCHING_METHOD` | No | polling | `polling` or `sse` |
 | `HC_PRICE_UPDATE_TX_METHOD` | No | ordered | `ordered` or `unordered` |
@@ -228,7 +229,7 @@ HC_UPDATE_INTERVAL_MS=600000   # 10 minutes
    - Query contract for price_feed_id
          ↓
 2. Fetch price from Pyth Hermes
-   GET https://hermes.pyth.network/v2/updates/price/latest?ids={price_feed_id}
+   GET https://pyth.dourolabs.app/hermes/v2/updates/price/latest?ids={price_feed_id}
          ↓
 3. Query current price from contract
          ↓
@@ -239,6 +240,29 @@ HC_UPDATE_INTERVAL_MS=600000   # 10 minutes
 5. Wait for next interval
    - Repeat from step 2
 ```
+
+If the price update fails with `InvalidRouterSetIndex`, the client queries the
+`pyth_vaa` address from `pyth_pro.get_config`, fetches the signed router-set
+upgrade VAA from:
+
+```bash
+GET $HC_HERMES_ENDPOINT/v1/guardian_set_upgrade_vaa
+```
+
+The endpoint returns `{ "vaa": "<hex-encoded serialized VAA bytes>" }` when an
+upgrade is active and `404 no guardian set upgrade in progress` otherwise. The
+client validates the VAA against the current `pyth_vaa` router config, converts
+the hex bytes to base64, submits:
+
+```json
+{
+  "submit_v_a_a": {
+    "vaa": "<base64-encoded serialized VAA bytes>"
+  }
+}
+```
+
+to `pyth_vaa`, then retries the original price update.
 
 ### Smart Update Logic
 
@@ -318,11 +342,22 @@ akash tx bank send <FROM> <ORACLE_ADDRESS> 100000000uakt --gas auto
 **"Failed to fetch from Hermes"**
 ```bash
 # Test Hermes API
-curl "https://hermes.pyth.network/v2/updates/price/latest?ids=<PRICE_FEED_ID>"
+curl -H "Authorization: Bearer $HC_HERMES_API_KEY" \
+  "$HC_HERMES_ENDPOINT/v2/updates/price/latest?ids[]=<PRICE_FEED_ID>"
 
 # Check price feed ID
 akash query wasm contract-state smart $HC_CONTRACT_ADDRESS '{"get_price_feed_id":{}}'
 ```
+
+**"InvalidRouterSetIndex"**
+```bash
+# Check whether Pyth is serving a router-set upgrade VAA
+curl -i -H "Authorization: Bearer $HC_HERMES_API_KEY" \
+  "$HC_HERMES_ENDPOINT/v1/guardian_set_upgrade_vaa"
+```
+
+`404 no guardian set upgrade in progress` means Pyth is not serving a rotation
+VAA at that moment.
 
 **"Price already up to date"**
 - Not an error! Contract already has the latest price
@@ -343,7 +378,8 @@ npm run cli:daemon
 curl $HC_RPC_ENDPOINT/status
 
 # Test Hermes
-curl "https://hermes.pyth.network/api/latest_price_feeds?ids[]=<FEED_ID>"
+curl -H "Authorization: Bearer $HC_HERMES_API_KEY" \
+  "$HC_HERMES_ENDPOINT/v2/updates/price/latest?ids[]=<FEED_ID>"
 
 # Test contract
 akash query wasm contract-state smart $HC_CONTRACT_ADDRESS '{"get_config":{}}'
@@ -357,7 +393,7 @@ For more detailed information:
 - **API Reference** - See `src/hermes-client.ts` JSDoc comments
 - **CLI Reference** - Run `npm run cli -- --help`
 - **Pyth Network** - https://docs.pyth.network/
-- **Hermes API** - https://hermes.pyth.network/docs/
+- **Hermes API** - https://pyth.dourolabs.app/docs/?urls.primaryName=Hermes%20API
 
 ## 🆘 Support
 

@@ -11,7 +11,7 @@ function setup() {
     rpcEndpoint: "https://rpc.akashnet.net:443",
     contractAddress: "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu",
     rawConfig: {
-      HERMES_ENDPOINT: "https://hermes.pyth.network",
+      HERMES_ENDPOINT: "https://pyth.dourolabs.app/hermes",
     },
     logger,
     createHermesClient: vi.fn(() => client),
@@ -64,12 +64,12 @@ describe("statusCommand", () => {
     await statusCommand(config);
 
     expect(logger.log).toHaveBeenCalledWith("RPC Endpoint:     https://rpc.akashnet.net:443");
-    expect(logger.log).toHaveBeenCalledWith("Hermes Endpoint:  https://hermes.pyth.network");
+    expect(logger.log).toHaveBeenCalledWith("Hermes Endpoint:  https://pyth.dourolabs.app/hermes");
   });
 
   it("uses default Hermes endpoint when not configured", async () => {
     const { config, client, logger } = setup();
-    (config.rawConfig as Record<string, unknown>).HERMES_ENDPOINT = "https://hermes.pyth.network";
+    (config.rawConfig as Record<string, unknown>).HERMES_ENDPOINT = "https://pyth.dourolabs.app/hermes";
     client.getStatus.mockResolvedValueOnce({
       address: "akash1sender",
       contractAddress: "akash1contract",
@@ -79,6 +79,6 @@ describe("statusCommand", () => {
 
     await statusCommand(config);
 
-    expect(logger.log).toHaveBeenCalledWith("Hermes Endpoint:  https://hermes.pyth.network");
+    expect(logger.log).toHaveBeenCalledWith("Hermes Endpoint:  https://pyth.dourolabs.app/hermes");
   });
 });

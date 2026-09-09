@@ -15,7 +15,7 @@ import {
 describe("SEC-02: validateEndpointUrl", () => {
   it("accepts valid HTTPS URLs", () => {
     expect(validateEndpointUrl("https://rpc.akashnet.net:443", "rpc")).toBe("https://rpc.akashnet.net:443");
-    expect(validateEndpointUrl("https://hermes.pyth.network", "hermes")).toBe("https://hermes.pyth.network");
+    expect(validateEndpointUrl("https://pyth.dourolabs.app/hermes", "hermes")).toBe("https://pyth.dourolabs.app/hermes");
   });
 
   it("rejects HTTP URLs (non-encrypted)", () => {

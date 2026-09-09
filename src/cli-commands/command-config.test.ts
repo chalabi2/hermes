@@ -13,6 +13,7 @@ vi.mock("../price-stream/price-sse-stream/price-sse-stream.ts", () => ({
 describe("parseConfig", () => {
   it("returns error when CONTRACT_ADDRESS is missing", () => {
     const result = parseConfig({
+      HERMES_API_KEY: "secret-token",
       WALLET_SECRET: "mnemonic:abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     });
 
@@ -21,7 +22,10 @@ describe("parseConfig", () => {
   });
 
   it("returns error when WALLET_SECRET is missing", () => {
-    const result = parseConfig({ CONTRACT_ADDRESS: "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu" });
+    const result = parseConfig({
+      CONTRACT_ADDRESS: "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu",
+      HERMES_API_KEY: "secret-token",
+    });
 
     expect(result.ok).toBe(false);
     expect((result as Extract<typeof result, { ok: false }>).error).toContain("WALLET_SECRET");
@@ -85,19 +89,18 @@ describe("parseConfig", () => {
 
     expect(result.ok).toBe(true);
     expect((result as Extract<typeof result, { ok: true }>).value.priceProducerFactory).toBeTypeOf("function");
+    expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.HERMES_ENDPOINT).toBe(
+      "https://pyth.dourolabs.app/hermes",
+    );
   });
 
-  it("accepts PYTH_ROUTER_ENDPOINTS as a comma-separated endpoint list", () => {
+  it("ignores legacy PYTH_ROUTER_ENDPOINTS", () => {
     const result = parseConfig(validEnv({
       PYTH_ROUTER_ENDPOINTS: "https://router-0.example/v1, https://router-1.example/v1,https://router-2.example/v1",
     }));
 
     expect(result.ok).toBe(true);
-    expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.PYTH_ROUTER_ENDPOINTS).toEqual([
-      "https://router-0.example/v1",
-      "https://router-1.example/v1",
-      "https://router-2.example/v1",
-    ]);
+    expect((result as Extract<typeof result, { ok: true }>).value.rawConfig).not.toHaveProperty("PYTH_ROUTER_ENDPOINTS");
   });
 
   it("accepts UPDATE_INTERVAL_MS and produces priceProducerFactory", () => {
@@ -236,18 +239,18 @@ describe("parseConfig", () => {
       vi.clearAllMocks();
     });
 
-    it("is optional and config parses when it is not provided", () => {
-      const result = parseConfig(validEnv());
+    it("returns error when HERMES_API_KEY is not provided", () => {
+      const result = parseConfig(validEnv({ HERMES_API_KEY: undefined }));
 
-      expect(result.ok).toBe(true);
-      expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.HERMES_API_KEY).toBeUndefined();
+      expect(result.ok).toBe(false);
+      expect((result as Extract<typeof result, { ok: false }>).error).toContain("HERMES_API_KEY");
     });
 
     it("parses config when HERMES_API_KEY is provided", () => {
-      const result = parseConfig(validEnv({ HERMES_API_KEY: "secret-token" }));
+      const result = parseConfig(validEnv({ HERMES_API_KEY: "other-token" }));
 
       expect(result.ok).toBe(true);
-      expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.HERMES_API_KEY).toBe("secret-token");
+      expect((result as Extract<typeof result, { ok: true }>).value.rawConfig.HERMES_API_KEY).toBe("other-token");
     });
 
     it("passes authenticationToken to pollPriceStream when method is polling", () => {
@@ -272,14 +275,14 @@ describe("parseConfig", () => {
       );
     });
 
-    it("passes undefined authenticationToken when HERMES_API_KEY is not set", () => {
+    it("passes authenticationToken to pollPriceStream from the required API key", () => {
       const result = parseConfig(validEnv());
 
       expect(result.ok).toBe(true);
       (result as Extract<typeof result, { ok: true }>).value.priceProducerFactory({ priceFeedId: "abc123" });
 
       expect(pollPriceStream).toHaveBeenCalledWith(
-        expect.objectContaining({ authenticationToken: undefined }),
+        expect.objectContaining({ authenticationToken: "secret-token" }),
       );
     });
   });
@@ -287,6 +290,7 @@ describe("parseConfig", () => {
   function validEnv(overrides: Record<string, string | undefined> = {}) {
     return {
       CONTRACT_ADDRESS: "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu",
+      HERMES_API_KEY: "secret-token",
       WALLET_SECRET: "mnemonic:abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
       ...overrides,
     };

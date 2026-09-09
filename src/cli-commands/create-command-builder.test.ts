@@ -144,6 +144,7 @@ function setup(env?: Record<string, string>) {
   const mockProcess = Object.assign(new EventEmitter(), {
     env: env ?? {
       HC_CONTRACT_ADDRESS: "akash1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5lzv7xu",
+      HC_HERMES_API_KEY: "secret-token",
       HC_WALLET_SECRET: "mnemonic:abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     },
     exit: vi.fn(),

@@ -9,78 +9,77 @@ const ROUTER_COUNT = 5;
 const ROUTER_ADDRESS_LEN = 20;
 const CURRENT_ROUTER_SET_INDEX = 0;
 const NEXT_ROUTER_SET_INDEX = 1;
-const GOVERNANCE_PAYLOAD_POS = 35;
-const VAA_BODY_PAYLOAD_POS = 51;
 const VAA_HEADER_LEN = 6;
 const VAA_SIGNATURE_LEN = 66;
+const VAA_BODY_PAYLOAD_POS = 51;
+const GOVERNANCE_PAYLOAD_POS = 35;
+const AKASH_TARGET_CHAIN = 29;
+const PYTHNET_EMITTER_CHAIN = 26;
+const PYTHNET_EMITTER_ADDRESS = Buffer.from("PythnetPythnetPythnetPythnetPyth");
 
 describe(RouterSetUpdater.name, () => {
-  it("assembles a router-set upgrade VAA from quorum signatures", async () => {
+  it("fetches the documented Hermes upgrade VAA and returns base64 bytes for submit_v_a_a", async () => {
     const currentKeys = routerKeys(1);
     const nextKeys = routerKeys(11);
-    const body = buildRouterSetUpgradeBody(nextKeys);
-    const shares = [2, 0, 4].map(index => buildUpgradeResponse({
-      body,
-      signingKey: currentKeys[index],
-      nextKeys,
-    }));
-    const fetch = fetchResponses(shares);
+    const vaa = buildRouterSetUpgradeVaa({ currentKeys, nextKeys });
+    const fetch = fetchResponse({ vaa: `0x${Buffer.from(vaa).toString("hex")}` });
     const updater = new RouterSetUpdater({
-      endpoints: ["https://router-2.example/v1", "https://router-0.example/v1", "https://router-4.example/v1"],
+      endpoint: "https://pyth.example/hermes",
       authenticationToken: "secret-token",
       fetch,
     });
 
     const result = await updater.buildUpgradeVaa(buildConfig(currentKeys));
 
+    expect(fetch).toHaveBeenCalledWith(
+      new URL("https://pyth.example/hermes/v1/guardian_set_upgrade_vaa"),
+      { headers: { Authorization: "Bearer secret-token" } },
+    );
     expect(result).toEqual({
-      vaa: expect.any(String),
+      vaa: Buffer.from(vaa).toString("base64"),
       currentRouterSetIndex: CURRENT_ROUTER_SET_INDEX,
       newRouterSetIndex: NEXT_ROUTER_SET_INDEX,
       signatureCount: 3,
     });
-    expect(fetch).toHaveBeenCalledWith(
-      new URL("https://router-2.example/v1/guardian_set_upgrade"),
-      { headers: { Authorization: "Bearer secret-token" } },
-    );
-
-    const vaa = Buffer.from(result?.vaa ?? "", "base64");
-    expect(vaa[0]).toBe(1);
-    expect(readU32(vaa, 1)).toBe(CURRENT_ROUTER_SET_INDEX);
-    expect(vaa[5]).toBe(3);
-    expect(vaa[VAA_HEADER_LEN]).toBe(0);
-    expect(vaa[VAA_HEADER_LEN + VAA_SIGNATURE_LEN]).toBe(2);
-    expect(vaa[VAA_HEADER_LEN + 2 * VAA_SIGNATURE_LEN]).toBe(4);
-    expect(vaa.subarray(VAA_HEADER_LEN + 3 * VAA_SIGNATURE_LEN)).toEqual(Buffer.from(body));
-    expectContractSignature(vaa, 0, currentKeys[0], body);
-    expectContractSignature(vaa, 1, currentKeys[2], body);
-    expectContractSignature(vaa, 2, currentKeys[4], body);
   });
 
-  it("returns undefined when routers report no upgrade in progress", async () => {
+  it("returns undefined when Hermes reports no guardian set upgrade in progress", async () => {
     const updater = new RouterSetUpdater({
-      endpoints: ["https://router-0.example/v1", "https://router-1.example/v1", "https://router-2.example/v1"],
-      fetch: fetchResponses([null, null, null]),
+      endpoint: "https://pyth.example/hermes",
+      fetch: fetchResponse("no guardian set upgrade in progress", { status: 404 }),
     });
 
     await expect(updater.buildUpgradeVaa(buildConfig(routerKeys(1)))).resolves.toBeUndefined();
   });
 
-  it("rejects an upgrade when fewer than three configured routers signed it", async () => {
+  it("rejects an upgrade VAA for a different active router set index", async () => {
     const currentKeys = routerKeys(1);
     const nextKeys = routerKeys(11);
-    const body = buildRouterSetUpgradeBody(nextKeys);
-    const updater = new RouterSetUpdater({
-      endpoints: ["https://router-0.example/v1", "https://router-1.example/v1", "https://router-2.example/v1"],
-      fetch: fetchResponses([
-        buildUpgradeResponse({ body, signingKey: currentKeys[0], nextKeys }),
-        null,
-        null,
-      ]),
+    const vaa = buildRouterSetUpgradeVaa({
+      currentKeys,
+      nextKeys,
+      currentRouterSetIndex: 9,
+      newRouterSetIndex: 10,
     });
+    const updater = updaterForVaa(vaa);
 
     await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
-      "only had 1 valid signatures",
+      "No router set upgrade VAA found for current router set index 0",
+    );
+  });
+
+  it("rejects an upgrade VAA with fewer than quorum signatures", async () => {
+    const currentKeys = routerKeys(1);
+    const nextKeys = routerKeys(11);
+    const vaa = buildRouterSetUpgradeVaa({
+      currentKeys,
+      nextKeys,
+      signerIndexes: [0, 1],
+    });
+    const updater = updaterForVaa(vaa);
+
+    await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
+      "only had 2 signatures",
     );
   });
 
@@ -88,64 +87,66 @@ describe(RouterSetUpdater.name, () => {
     const currentKeys = routerKeys(1);
     const outsiderKeys = routerKeys(31);
     const nextKeys = routerKeys(11);
-    const body = buildRouterSetUpgradeBody(nextKeys);
-    const updater = new RouterSetUpdater({
-      endpoints: ["https://router-0.example/v1", "https://router-1.example/v1", "https://router-2.example/v1"],
-      fetch: fetchResponses([0, 1, 2].map(index => buildUpgradeResponse({
-        body,
-        signingKey: outsiderKeys[index],
-        nextKeys,
-      }))),
+    const vaa = buildRouterSetUpgradeVaa({
+      currentKeys: outsiderKeys,
+      nextKeys,
     });
+    const updater = updaterForVaa(vaa);
 
     await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
       "does not match any configured router",
     );
   });
 
-  it("accepts signatures encoded as v-r-s and normalizes them for the contract", async () => {
+  it("rejects the wrong governance target chain", async () => {
     const currentKeys = routerKeys(1);
     const nextKeys = routerKeys(11);
-    const body = buildRouterSetUpgradeBody(nextKeys);
-    const shares = [0, 1, 2].map(index => buildUpgradeResponse({
-      body,
-      signingKey: currentKeys[index],
+    const vaa = buildRouterSetUpgradeVaa({
+      currentKeys,
       nextKeys,
-      signatureFormat: "vrs",
-    }));
-    const updater = new RouterSetUpdater({
-      endpoints: ["https://router-0.example/v1", "https://router-1.example/v1", "https://router-2.example/v1"],
-      fetch: fetchResponses(shares),
+      governanceTargetChain: AKASH_TARGET_CHAIN + 1,
     });
-
-    const result = await updater.buildUpgradeVaa(buildConfig(currentKeys));
-    const vaa = Buffer.from(result?.vaa ?? "", "base64");
-    const firstSignatureStart = VAA_HEADER_LEN + 1;
-
-    expect(vaa[firstSignatureStart + 64]).toBeLessThanOrEqual(1);
-  });
-
-  it("requires an upgrade VAA for the contract's active router set index", async () => {
-    const currentKeys = routerKeys(1);
-    const nextKeys = routerKeys(11);
-    const body = buildRouterSetUpgradeBody(nextKeys, 10);
-    const response = buildUpgradeResponse({
-      body,
-      signingKey: currentKeys[0],
-      nextKeys,
-      currentRouterSetIndex: 9,
-      newRouterSetIndex: 10,
-    });
-    const updater = new RouterSetUpdater({
-      endpoints: ["https://router-0.example/v1", "https://router-1.example/v1", "https://router-2.example/v1"],
-      fetch: fetchResponses([response, response, response]),
-    });
+    const updater = updaterForVaa(vaa);
 
     await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
-      "No router set upgrade VAA found for current router set index 0",
+      "Invalid Pyth router set upgrade governance target chain",
+    );
+  });
+
+  it("rejects the wrong emitter", async () => {
+    const currentKeys = routerKeys(1);
+    const nextKeys = routerKeys(11);
+    const vaa = buildRouterSetUpgradeVaa({
+      currentKeys,
+      nextKeys,
+      emitterChain: PYTHNET_EMITTER_CHAIN + 1,
+    });
+    const updater = updaterForVaa(vaa);
+
+    await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
+      "Invalid Pyth router set upgrade emitter",
+    );
+  });
+
+  it("rejects duplicate routers in the new set", async () => {
+    const currentKeys = routerKeys(1);
+    const nextKeys = routerKeys(11);
+    nextKeys[4] = nextKeys[3];
+    const vaa = buildRouterSetUpgradeVaa({ currentKeys, nextKeys });
+    const updater = updaterForVaa(vaa);
+
+    await expect(updater.buildUpgradeVaa(buildConfig(currentKeys))).rejects.toThrow(
+      "duplicate router addresses",
     );
   });
 });
+
+function updaterForVaa(vaa: Uint8Array): RouterSetUpdater {
+  return new RouterSetUpdater({
+    endpoint: "https://pyth.example/hermes",
+    fetch: fetchResponse({ vaa: Buffer.from(vaa).toString("hex") }),
+  });
+}
 
 function routerKeys(offset: number): Uint8Array[] {
   return Array.from({ length: ROUTER_COUNT }, (_, index) => {
@@ -158,67 +159,90 @@ function routerKeys(offset: number): Uint8Array[] {
 function buildConfig(keys: Uint8Array[]): PythVaaConfigResponse {
   return {
     admin: "akash1admin",
-    governance_target_chain: 0,
+    governance_target_chain: AKASH_TARGET_CHAIN,
     router_verifier: {
       router_set_index: CURRENT_ROUTER_SET_INDEX,
       routers: keys.map(key => ({ bytes: Buffer.from(routerAddress(key)).toString("base64") })),
-      expected_emitter_chain: 26,
-      expected_emitter_address: Buffer.from("PythnetPythnetPythnetPythnetPyth").toString("base64"),
+      expected_emitter_chain: PYTHNET_EMITTER_CHAIN,
+      expected_emitter_address: PYTHNET_EMITTER_ADDRESS.toString("base64"),
     },
   };
 }
 
-function buildRouterSetUpgradeBody(nextKeys: Uint8Array[], routerSetIndex = NEXT_ROUTER_SET_INDEX): Uint8Array {
+function buildRouterSetUpgradeVaa(input: {
+  currentKeys: Uint8Array[];
+  nextKeys: Uint8Array[];
+  currentRouterSetIndex?: number;
+  newRouterSetIndex?: number;
+  governanceTargetChain?: number;
+  emitterChain?: number;
+  signerIndexes?: number[];
+}): Uint8Array {
+  const signerIndexes = input.signerIndexes ?? [0, 1, 2];
+  const body = buildRouterSetUpgradeBody({
+    nextKeys: input.nextKeys,
+    routerSetIndex: input.newRouterSetIndex ?? NEXT_ROUTER_SET_INDEX,
+    governanceTargetChain: input.governanceTargetChain ?? AKASH_TARGET_CHAIN,
+    emitterChain: input.emitterChain ?? PYTHNET_EMITTER_CHAIN,
+  });
+  const hash = keccak_256(keccak_256(body));
+  const vaa = new Uint8Array(VAA_HEADER_LEN + signerIndexes.length * VAA_SIGNATURE_LEN + body.length);
+  let offset = 0;
+  vaa[offset++] = 1;
+  writeU32(vaa, offset, input.currentRouterSetIndex ?? CURRENT_ROUTER_SET_INDEX);
+  offset += 4;
+  vaa[offset++] = signerIndexes.length;
+
+  for (const signerIndex of signerIndexes) {
+    vaa[offset++] = signerIndex;
+    vaa.set(signContractVaaBytes(input.currentKeys[signerIndex], hash), offset);
+    offset += 65;
+  }
+
+  vaa.set(body, offset);
+  return vaa;
+}
+
+function buildRouterSetUpgradeBody(input: {
+  nextKeys: Uint8Array[];
+  routerSetIndex: number;
+  governanceTargetChain: number;
+  emitterChain: number;
+}): Uint8Array {
   const body = new Uint8Array(VAA_BODY_PAYLOAD_POS + GOVERNANCE_PAYLOAD_POS + 5 + ROUTER_COUNT * ROUTER_ADDRESS_LEN);
   writeU32(body, 0, 1_700_000_000);
   writeU32(body, 4, 0);
-  writeU16(body, 8, 26);
-  body.set(Buffer.from("PythnetPythnetPythnetPythnetPyth"), 10);
+  writeU16(body, 8, input.emitterChain);
+  body.set(PYTHNET_EMITTER_ADDRESS, 10);
   writeU64(body, 42, 1n);
   body[50] = 0;
 
   const module = Buffer.from("Core");
   body.set(module, VAA_BODY_PAYLOAD_POS + 32 - module.length);
   body[VAA_BODY_PAYLOAD_POS + 32] = 2;
-  writeU16(body, VAA_BODY_PAYLOAD_POS + 33, 0);
+  writeU16(body, VAA_BODY_PAYLOAD_POS + 33, input.governanceTargetChain);
 
   const updateStart = VAA_BODY_PAYLOAD_POS + GOVERNANCE_PAYLOAD_POS;
-  writeU32(body, updateStart, routerSetIndex);
+  writeU32(body, updateStart, input.routerSetIndex);
   body[updateStart + 4] = ROUTER_COUNT;
-  nextKeys.forEach((key, index) => {
+  input.nextKeys.forEach((key, index) => {
     body.set(routerAddress(key), updateStart + 5 + index * ROUTER_ADDRESS_LEN);
   });
 
   return body;
 }
 
-function buildUpgradeResponse(input: {
-  body: Uint8Array;
-  signingKey: Uint8Array;
-  nextKeys: Uint8Array[];
-  currentRouterSetIndex?: number;
-  newRouterSetIndex?: number;
-  signatureFormat?: "rsv" | "vrs";
-}) {
-  const hash = keccak_256(keccak_256(input.body));
-  const signature = secp256k1.sign(hash, input.signingKey, {
+function signContractVaaBytes(signingKey: Uint8Array, hash: Uint8Array): Uint8Array {
+  const signature = secp256k1.sign(hash, signingKey, {
     prehash: false,
     lowS: false,
     format: "recovered",
   });
-  const compact = signature.toBytes("compact");
-  const recovery = Uint8Array.of(signature.recovery);
-  const rawSignature = input.signatureFormat === "vrs"
-    ? concatBytes(recovery, compact)
-    : concatBytes(compact, recovery);
-
-  return {
-    current_guardian_set_index: input.currentRouterSetIndex ?? CURRENT_ROUTER_SET_INDEX,
-    new_guardian_set_index: input.newRouterSetIndex ?? NEXT_ROUTER_SET_INDEX,
-    new_guardian_keys: input.nextKeys.map(key => Array.from(routerAddress(key))),
-    body: `0x${Buffer.from(input.body).toString("hex")}`,
-    signature: `0x${Buffer.from(rawSignature).toString("hex")}`,
-  };
+  const recovery = signature.hasHighS()
+    ? signature.recovery ^ 1
+    : signature.recovery;
+  const normalized = signature.normalizeS();
+  return concatBytes(normalized.toBytes("compact"), Uint8Array.of(recovery));
 }
 
 function routerAddress(secretKey: Uint8Array): Uint8Array {
@@ -226,35 +250,14 @@ function routerAddress(secretKey: Uint8Array): Uint8Array {
   return keccak_256(publicKey.subarray(1)).subarray(12);
 }
 
-function expectContractSignature(
-  vaa: Uint8Array,
-  signatureNumber: number,
-  signingKey: Uint8Array,
-  body: Uint8Array,
-) {
-  const signatureStart = VAA_HEADER_LEN + signatureNumber * VAA_SIGNATURE_LEN + 1;
-  const compact = vaa.subarray(signatureStart, signatureStart + 64);
-  const recovery = vaa[signatureStart + 64];
-  const signature = secp256k1.Signature.fromBytes(
-    concatBytes(Uint8Array.of(recovery), compact),
-    "recovered",
-  );
-  const recoveredKey = signature.recoverPublicKey(keccak_256(keccak_256(body))).toBytes(false);
-
-  expect(signature.hasHighS()).toBe(false);
-  expect(keccak_256(recoveredKey.subarray(1)).subarray(12)).toEqual(routerAddress(signingKey));
-}
-
-function fetchResponses(responses: Array<unknown>): typeof fetch {
-  const fetch = vi.fn(async () => {
-    const response = responses.shift();
-    return new Response(JSON.stringify(response), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  });
-
-  return fetch;
+function fetchResponse(body: unknown, init: ResponseInit = {}): typeof fetch {
+  return vi.fn(async () => new Response(
+    typeof body === "string" ? body : JSON.stringify(body),
+    {
+      status: init.status ?? 200,
+      headers: init.headers ?? { "content-type": "application/json" },
+    },
+  ));
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
@@ -265,10 +268,6 @@ function concatBytes(...parts: Uint8Array[]): Uint8Array {
     offset += part.length;
   }
   return result;
-}
-
-function readU32(bytes: Uint8Array, offset: number): number {
-  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, false);
 }
 
 function writeU16(bytes: Uint8Array, offset: number, value: number): void {
