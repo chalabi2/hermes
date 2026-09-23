@@ -23,6 +23,13 @@ const GOVERNANCE_TARGET_CHAIN_POS = 33;
 const GOVERNANCE_PAYLOAD_POS = 35;
 const GOVERNANCE_ACTION_ROUTER_SET_UPGRADE = 2;
 const GOVERNANCE_TARGET_CHAIN_GLOBAL = 0;
+// Governance uses the protocol emitter, not the configured Pythnet price emitter.
+// https://github.com/pyth-network/pyth-crosschain/blob/main/contract_manager/src/store/guardian_sets/ProCompatibleProductionGuardianSetVaas.json
+const GOVERNANCE_EMITTER_CHAIN = 1;
+const GOVERNANCE_EMITTER_ADDRESS = Buffer.from(
+  "0000000000000000000000000000000000000000000000000000000000000004",
+  "hex",
+);
 const SIGNATURE_LEN = 65;
 const COMPACT_SIGNATURE_LEN = 64;
 const U32_MAX = 0xffffffff;
@@ -59,8 +66,6 @@ interface RouterConfig {
   routerSetIndex: number;
   routerAddresses: string[];
   governanceTargetChain: number;
-  expectedEmitterChain: number;
-  expectedEmitterAddress: Uint8Array;
 }
 
 interface RouterSignature {
@@ -150,8 +155,6 @@ function parsePythVaaConfig(config: PythVaaConfigResponse): RouterConfig {
     routerSetIndex: parsed.data.router_verifier.router_set_index,
     routerAddresses,
     governanceTargetChain: parsed.data.governance_target_chain,
-    expectedEmitterChain: parsed.data.router_verifier.expected_emitter_chain,
-    expectedEmitterAddress,
   };
 }
 
@@ -186,7 +189,7 @@ function parseAggregateUpgradeVaa(
   }
 
   const body = vaa.subarray(bodyStart);
-  validateEmitter(body, routerConfig);
+  validateEmitter(body);
   validateVaaSignatures({
     body,
     routerAddresses: routerConfig.routerAddresses,
@@ -267,7 +270,7 @@ function parseGovernanceRouterSetUpdate(body: Uint8Array, governanceTargetChain:
   return body.subarray(VAA_BODY_PAYLOAD_POS + GOVERNANCE_PAYLOAD_POS);
 }
 
-function validateEmitter(body: Uint8Array, routerConfig: RouterConfig): void {
+function validateEmitter(body: Uint8Array): void {
   if (body.length < VAA_BODY_PAYLOAD_POS) {
     throw new Error("Invalid Pyth router set upgrade VAA body length");
   }
@@ -278,8 +281,8 @@ function validateEmitter(body: Uint8Array, routerConfig: RouterConfig): void {
     VAA_EMITTER_ADDRESS_POS + VAA_EMITTER_ADDRESS_LEN,
   );
   if (
-    emitterChain !== routerConfig.expectedEmitterChain
-    || !bytesEqual(emitterAddress, routerConfig.expectedEmitterAddress)
+    emitterChain !== GOVERNANCE_EMITTER_CHAIN
+    || !bytesEqual(emitterAddress, GOVERNANCE_EMITTER_ADDRESS)
   ) {
     throw new Error("Invalid Pyth router set upgrade emitter");
   }

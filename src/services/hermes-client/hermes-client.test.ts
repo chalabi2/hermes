@@ -612,6 +612,51 @@ describe(HermesClient.name, () => {
       );
     });
 
+    it("continues processing prices when router-set upgrade submission fails", async () => {
+      const firstPriceUpdate = buildPriceFeed("10000", -2, 2000, "stale-router-vaa");
+      const secondPriceUpdate = buildPriceFeed("10100", -2, 3000, "manual-rotation-price-vaa");
+      const routerSetUpdater = {
+        buildUpgradeVaa: vi.fn().mockResolvedValue({
+          vaa: btoa("router-set-upgrade"),
+          currentRouterSetIndex: 0,
+          newRouterSetIndex: 1,
+          signatureCount: 3,
+        }),
+      };
+      const { promise: routerSubmissionAttempted, resolve: resolveRouterSubmissionAttempted } = Promise.withResolvers<void>();
+      const priceProducerFactory = vi.fn(async function* () {
+        yield firstPriceUpdate;
+        await routerSubmissionAttempted;
+        yield secondPriceUpdate;
+      });
+      const { client, contractClient, logger } = setup({
+        priceProducerFactory: priceProducerFactory as unknown as PriceProducerFactory,
+        routerSetUpdater,
+      });
+
+      contractClient.queryCurrentPrice.mockResolvedValue(buildCurrentPrice("9000", -2, 1000));
+      contractClient.updatePrice
+        .mockRejectedValueOnce(new Error("InvalidRouterSetIndex: query wasm contract failed"))
+        .mockResolvedValueOnce({ transactionHash: "PRICE_TX", gasUsed: 500000n });
+      contractClient.submitRouterSetUpgrade.mockImplementationOnce(async () => {
+        resolveRouterSubmissionAttempted();
+        throw new Error("router tx broadcast failed");
+      });
+
+      await client.start();
+
+      expect(contractClient.submitRouterSetUpgrade).toHaveBeenCalledWith({
+        pythVaaContract: "akash1vaa",
+        vaa: btoa("router-set-upgrade"),
+      });
+      expect(contractClient.updatePrice).toHaveBeenNthCalledWith(1, firstPriceUpdate, { updateFee: "1" });
+      expect(contractClient.updatePrice).toHaveBeenNthCalledWith(2, secondPriceUpdate, { updateFee: "1" });
+      expect(logger.error).toHaveBeenCalledWith(
+        "Error in scheduled update:",
+        expect.any(Error),
+      );
+    });
+
     it("propagates a producer failure to the consumer", async () => {
       const factory = vi.fn(async function* () {
         yield buildPriceFeed("10000", -2, 2000);
